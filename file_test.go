@@ -1,7 +1,9 @@
 package gguf_parser
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"testing"
 	"time"
@@ -255,5 +257,63 @@ func TestParseGGUFFileFromOllama(t *testing.T) {
 			t.Logf("cost: %v\n", time.Since(start))
 			t.Log("\n", spew.Sdump(f), "\n")
 		})
+	}
+}
+
+// FuzzParseGGUFFile writes the fuzz input to a temp file and calls ParseGGUFFile.
+// Any panic during parsing will be reported by the fuzzing harness.
+func FuzzParseGGUFFile(f *testing.F) {
+	buf := new(bytes.Buffer)
+	bo := binary.LittleEndian
+
+	for _, v := range []GGUFMagic{GGUFMagicGGML, GGUFMagicGGMF, GGUFMagicGGJT, GGUFMagicGGUFLe, GGUFMagicGGUFBe} {
+		_ = binary.Write(buf, bo, uint32(v))
+		f.Add(buf.Bytes())
+		buf.Reset()
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		tmp, err := os.CreateTemp("", "gguf_fuzz_*.gguf")
+		if err != nil {
+			t.Fatalf("create tmp: %v", err)
+		}
+		defer os.Remove(tmp.Name())
+
+		if _, err := tmp.Write(data); err != nil {
+			t.Fatalf("write tmp: %v", err)
+		}
+		if err := tmp.Close(); err != nil {
+			t.Fatalf("close tmp: %v", err)
+		}
+
+		// Call the public ParseGGUFFile which exercises parseGGUFFile.
+		_, _ = ParseGGUFFile(tmp.Name())
+	})
+}
+
+func TestParseGGUFFileWithFuzzInput(t *testing.T) {
+	// Use the fuzz-generated data
+	// data := []byte("GGUF\x00\x00\x00\x030000000000000000")
+	data := []byte("FUGG\x00\x00\x00\x00GG>?\x00\x00\x00\x000000")
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "fuzz_test_gguf_*.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.Write(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	// Parse should return error (since it's invalid or triggers the check)
+	_, err = ParseGGUFFile(tmpFile.Name())
+	if err == nil {
+		t.Error("expected error for fuzz-generated data")
+	} else {
+		t.Logf("got expected error: %v", err)
 	}
 }
